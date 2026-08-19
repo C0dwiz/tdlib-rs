@@ -7,28 +7,40 @@
 // <LICENSE-MIT or https://opensource.org/licenses/MIT>, at your
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
+
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_double, c_int};
+use std::sync::Mutex;
 
 unsafe extern "C" {
     fn td_create_client_id() -> c_int;
     fn td_send(client_id: c_int, request: *const c_char);
     fn td_receive(timeout: c_double) -> *const c_char;
+    fn td_free_response(response: *const c_char);
 }
 
-pub(crate) fn create_client() -> i32 {
+static GLOBAL_LOCK: Mutex<()> = Mutex::new(());
+
+pub fn create_client() -> i32 {
     unsafe { td_create_client_id() }
 }
 
-pub(crate) fn send(client_id: i32, request: String) {
+pub fn send(client_id: i32, request: String) {
+    let _guard = GLOBAL_LOCK.lock().unwrap();
     let cstring = CString::new(request).unwrap();
-    unsafe { td_send(client_id, cstring.as_ptr()) }
+    unsafe { td_send(client_id, cstring.as_ptr()) };
 }
 
-pub(crate) fn receive(timeout: f64) -> Option<String> {
+pub fn receive(timeout: f64) -> Option<String> {
+    let _guard = GLOBAL_LOCK.lock().unwrap();
     unsafe {
-        td_receive(timeout)
-            .as_ref()
-            .map(|response| CStr::from_ptr(response).to_string_lossy().into_owned())
+        let ptr = td_receive(timeout);
+        if ptr.is_null() {
+            None
+        } else {
+            let response = CStr::from_ptr(ptr).to_string_lossy().into_owned();
+            td_free_response(ptr);
+            Some(response)
+        }
     }
 }
