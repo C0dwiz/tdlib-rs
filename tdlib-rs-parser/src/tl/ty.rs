@@ -13,12 +13,14 @@ use std::str::FromStr;
 use crate::errors::ParamParseError;
 
 /// The type of a definition or a parameter.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Type {
     /// The name of the type.
     pub name: String,
 
     /// Whether this type is bare or boxed.
+    /// A type is "bare" if its name starts with a lowercase letter,
+    /// "boxed" if it starts with an uppercase letter.
     pub bare: bool,
 
     /// If the type has a generic argument, which is its type.
@@ -29,7 +31,7 @@ impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.name)?;
         if let Some(generic_arg) = &self.generic_arg {
-            write!(f, "<{generic_arg}>")?;
+            write!(f, "<{}>", generic_arg)?;
         }
         Ok(())
     }
@@ -46,30 +48,62 @@ impl FromStr for Type {
     /// use tdlib_rs_parser::tl::Type;
     ///
     /// assert!("vector<int>".parse::<Type>().is_ok());
+    /// assert!("vector < int >".parse::<Type>().is_ok());
     /// ```
     fn from_str(ty: &str) -> Result<Self, Self::Err> {
-        // Parse `type<generic_arg>`
-        let (ty, generic_arg) = if let Some(pos) = ty.find('<') {
-            if !ty.ends_with('>') {
-                return Err(ParamParseError::InvalidGeneric);
-            }
-            (
-                &ty[..pos],
-                Some(Box::new(Type::from_str(&ty[pos + 1..ty.len() - 1])?)),
-            )
-        } else {
-            (ty, None)
-        };
-
+        let ty = ty.trim();
         if ty.is_empty() {
             return Err(ParamParseError::Empty);
         }
 
-        // Safe to unwrap because we just checked is not empty
-        let bare = ty.chars().next().unwrap().is_ascii_lowercase();
+        // Parse `type<generic_arg>` with support for optional spaces.
+        // Find the matching closing '>' by counting angle brackets.
+        let (name_part, generic_arg) = if let Some(open_pos) = ty.find('<') {
+            // Find the matching closing '>'
+            let mut depth = 0;
+            let mut close_pos = None;
+            for (i, ch) in ty[open_pos..].char_indices() {
+                match ch {
+                    '<' => depth += 1,
+                    '>' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            close_pos = Some(open_pos + i);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            match close_pos {
+                Some(pos) => {
+                    let name = ty[..open_pos].trim();
+                    if name.is_empty() {
+                        return Err(ParamParseError::Empty);
+                    }
+                    let arg_str = ty[open_pos + 1..pos].trim();
+                    if arg_str.is_empty() {
+                        return Err(ParamParseError::InvalidGeneric);
+                    }
+                    let arg = Type::from_str(arg_str)?;
+                    (name, Some(Box::new(arg)))
+                }
+                None => return Err(ParamParseError::InvalidGeneric),
+            }
+        } else {
+            (ty, None)
+        };
+
+        // Determine bareness based on the first character of the name
+        let bare = name_part
+            .chars()
+            .next()
+            .map(|c| c.is_ascii_lowercase())
+            .unwrap_or(false);
 
         Ok(Self {
-            name: ty.into(),
+            name: name_part.to_string(),
             bare,
             generic_arg,
         })
@@ -81,8 +115,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn check_empty_simple() {
+    fn check_empty() {
         assert_eq!(Type::from_str(""), Err(ParamParseError::Empty));
+        assert_eq!(Type::from_str("   "), Err(ParamParseError::Empty));
     }
 
     #[test]
@@ -95,11 +130,14 @@ mod tests {
                 generic_arg: None,
             })
         );
-    }
-
-    #[test]
-    fn check_empty() {
-        assert_eq!(Type::from_str(""), Err(ParamParseError::Empty));
+        assert_eq!(
+            Type::from_str("  foo  "),
+            Ok(Type {
+                name: "foo".into(),
+                bare: true,
+                generic_arg: None,
+            })
+        );
     }
 
     #[test]
@@ -107,6 +145,10 @@ mod tests {
         assert!(matches!(Type::from_str("foo"), Ok(Type { bare: true, .. })));
         assert!(matches!(
             Type::from_str("Foo"),
+            Ok(Type { bare: false, .. })
+        ));
+        assert!(matches!(
+            Type::from_str("  Foo  "),
             Ok(Type { bare: false, .. })
         ));
     }
@@ -127,13 +169,6 @@ mod tests {
             }) => *x == "bar".parse().unwrap(),
             _ => false,
         });
-        assert!(match Type::from_str("foo<bar>") {
-            Ok(Type {
-                generic_arg: Some(x),
-                ..
-            }) => *x == "bar".parse().unwrap(),
-            _ => false,
-        });
         assert!(match Type::from_str("foo<bar<baz>>") {
             Ok(Type {
                 generic_arg: Some(x),
@@ -141,5 +176,35 @@ mod tests {
             }) => *x == "bar<baz>".parse().unwrap(),
             _ => false,
         });
+        assert!(match Type::from_str("foo < bar >") {
+            Ok(Type {
+                generic_arg: Some(x),
+                ..
+            }) => *x == "bar".parse().unwrap(),
+            _ => false,
+        });
+        assert!(match Type::from_str("foo < bar < baz > >") {
+            Ok(Type {
+                generic_arg: Some(x),
+                ..
+            }) => *x == "bar < baz >".parse().unwrap(),
+            _ => false,
+        });
+    }
+
+    #[test]
+    fn check_invalid_generic() {
+        assert_eq!(
+            Type::from_str("foo<bar"),
+            Err(ParamParseError::InvalidGeneric)
+        );
+        assert_eq!(
+            Type::from_str("foo< >"),
+            Err(ParamParseError::InvalidGeneric)
+        );
+        assert_eq!(
+            Type::from_str("<>"),
+            Err(ParamParseError::Empty)
+        );
     }
 }
