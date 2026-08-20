@@ -18,7 +18,7 @@ pub(super) struct Observer {
 
 impl Observer {
     pub fn new() -> Self {
-        Observer {
+        Self {
             requests: RwLock::default(),
         }
     }
@@ -30,16 +30,25 @@ impl Observer {
     }
 
     pub fn notify(&self, response: Value) {
-        let extra = response["@extra"].as_u64().unwrap() as u32;
-        match self.requests.write().unwrap().remove(&extra) {
-            Some(sender) => {
-                if sender.send(response).is_err() {
-                    log::warn!("Got a response of an unaccessible request");
-                }
-            }
+        let extra = response
+            .get("@extra")
+            .and_then(|v| v.as_u64())
+            .and_then(|e| u32::try_from(e).ok());
+
+        let extra = match extra {
+            Some(id) => id,
             None => {
-                log::warn!("Got a response of an unknown request");
+                log::error!("Response missing or invalid '@extra' field: {:?}", response);
+                return;
             }
+        };
+
+        if let Some(sender) = self.requests.write().unwrap().remove(&extra) {
+            if sender.send(response).is_err() {
+                log::warn!("Got a response for a request that was dropped by receiver");
+            }
+        } else {
+            log::warn!("Got a response for unknown request with extra {}", extra);
         }
     }
 }
