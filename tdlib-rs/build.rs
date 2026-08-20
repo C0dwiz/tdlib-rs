@@ -59,9 +59,10 @@ fn copy_dir_all(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> std::io::Result
 fn copy_local_tdlib() {
     match env::var("LOCAL_TDLIB_PATH") {
         Ok(tdlib_path) => {
-            let out_dir = env::var("OUT_DIR").unwrap();
+            let out_dir = env::var("OUT_DIR").expect("OUT_DIR environment variable not set");
             let prefix = format!("{out_dir}/tdlib");
-            copy_dir_all(Path::new(&tdlib_path), Path::new(&prefix)).unwrap();
+            copy_dir_all(Path::new(&tdlib_path), Path::new(&prefix))
+                .unwrap_or_else(|err| panic!("Failed to copy tdlib from {} to {}: {}", tdlib_path, prefix, err));
         }
         Err(_) => {
             panic!("The LOCAL_TDLIB_PATH env variable must be set to the path of the tdlib folder");
@@ -81,79 +82,83 @@ fn copy_local_tdlib() {
 /// - MacOS x86_64
 /// - MacOS aarch64
 fn generic_build() {
-    let out_dir = env::var("OUT_DIR").unwrap();
-    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap();
+    let out_dir = env::var("OUT_DIR").expect("OUT_DIR environment variable not set");
+    let target_os = env::var("CARGO_CFG_TARGET_OS").expect("CARGO_CFG_TARGET_OS not set");
     let prefix = format!("{out_dir}/tdlib");
     let include_dir = format!("{prefix}/include");
     let lib_dir = format!("{prefix}/lib");
-    #[cfg(not(feature = "static"))]
-    let dynamic_lib_path = match target_os.as_str() {
-        "android" => format!("{lib_dir}/libtdjson.so"),
-        "linux" => format!("{lib_dir}/libtdjson.so.{TDLIB_VERSION}"),
-        "macos" => format!("{lib_dir}/libtdjson.{TDLIB_VERSION}.dylib"),
-        "windows" => format!(r"{lib_dir}\tdjson.lib"),
-        _ => panic!("Unsupported target OS: {target_os}"),
-    };
 
-    #[cfg(feature = "static")]
-    let static_libs = [
-        "tdactor",
-        "tdapi",
-        "tdclient",
-        "tdcore",
-        "tddb",
-        "tde2e",
-        "tdjson_private",
-        "tdjson_static",
-        "tdmtproto",
-        "tdnet",
-        "tdsqlite",
-        "tdutils",
-    ];
-
-    #[cfg(feature = "static")]
-    let static_libs_external = if target_os == "windows" {
-        ["libssl", "libcrypto", "zlib"]
-    } else {
-        ["ssl", "crypto", "z"]
-    };
-
-    #[cfg(feature = "static")]
-    let all_static_libs: Vec<String> = static_libs
-        .iter()
-        .map(|name| name.to_string())
-        .chain(static_libs_external.iter().map(|name| name.to_string()))
-        .collect();
-
-    #[cfg(feature = "static")]
-    let missing_static_libs: Vec<String> = all_static_libs
-        .iter()
-        .filter_map(|name| {
-            let path = if target_os == "windows" {
-                format!(r"{lib_dir}\{name}.lib")
-            } else {
-                format!("{lib_dir}/lib{name}.a")
-            };
-
-            if std::path::PathBuf::from(path.clone()).exists() {
-                None
-            } else {
-                Some(path)
-            }
-        })
-        .collect();
-
-    #[cfg(feature = "static")]
-    if !missing_static_libs.is_empty() {
-        panic!(
-            "required TDLib static libraries not found: {}",
-            missing_static_libs.join(", ")
-        );
+    // Check that the include and lib directories exist
+    if !Path::new(&include_dir).exists() {
+        panic!("Include directory not found: {}", include_dir);
+    }
+    if !Path::new(&lib_dir).exists() {
+        panic!("Library directory not found: {}", lib_dir);
     }
 
     #[cfg(not(feature = "static"))]
-    if !std::path::PathBuf::from(dynamic_lib_path.clone()).exists() {
-        panic!("tdjson shared library not found at {dynamic_lib_path}");
+    {
+        let dynamic_lib_path = match target_os.as_str() {
+            "android" => format!("{lib_dir}/libtdjson.so"),
+            "linux" => format!("{lib_dir}/libtdjson.so.{TDLIB_VERSION}"),
+            "macos" => format!("{lib_dir}/libtdjson.{TDLIB_VERSION}.dylib"),
+            "windows" => format!(r"{lib_dir}\tdjson.lib"),
+            _ => panic!("Unsupported target OS: {target_os}"),
+        };
+        if !Path::new(&dynamic_lib_path).exists() {
+            panic!("tdjson shared library not found at {}", dynamic_lib_path);
+        }
+    }
+
+    #[cfg(feature = "static")]
+    {
+        let static_libs = [
+            "tdactor",
+            "tdapi",
+            "tdclient",
+            "tdcore",
+            "tddb",
+            "tde2e",
+            "tdjson_private",
+            "tdjson_static",
+            "tdmtproto",
+            "tdnet",
+            "tdsqlite",
+            "tdutils",
+        ];
+        let static_libs_external = if target_os == "windows" {
+            ["libssl", "libcrypto", "zlib"]
+        } else {
+            ["ssl", "crypto", "z"]
+        };
+        let all_static_libs: Vec<String> = static_libs
+            .iter()
+            .map(|name| name.to_string())
+            .chain(static_libs_external.iter().map(|name| name.to_string()))
+            .collect();
+
+        let missing_static_libs: Vec<String> = all_static_libs
+            .iter()
+            .filter_map(|name| {
+                let path = if target_os == "windows" {
+                    format!(r"{lib_dir}\{name}.lib")
+                } else {
+                    format!("{lib_dir}/lib{name}.a")
+                };
+                if Path::new(&path).exists() {
+                    None
+                } else {
+                    Some(path)
+                }
+            })
+            .collect();
+
+        if !missing_static_libs.is_empty() {
+            panic!(
+                "required TDLib static libraries not found: {}",
+                missing_static_libs.join(", ")
+            );
+        }
     }
 
     #[cfg(not(feature = "static"))]
@@ -164,12 +169,37 @@ fn generic_build() {
 
     println!("cargo:rustc-link-search=native={lib_dir}");
     println!("cargo:include={include_dir}");
-    #[cfg(feature = "static")]
-    for link_name in &all_static_libs {
-        println!("cargo:rustc-link-lib=static={link_name}");
-    }
+
     #[cfg(feature = "static")]
     {
+        let static_libs = [
+            "tdactor",
+            "tdapi",
+            "tdclient",
+            "tdcore",
+            "tddb",
+            "tde2e",
+            "tdjson_private",
+            "tdjson_static",
+            "tdmtproto",
+            "tdnet",
+            "tdsqlite",
+            "tdutils",
+        ];
+        let static_libs_external = if target_os == "windows" {
+            ["libssl", "libcrypto", "zlib"]
+        } else {
+            ["ssl", "crypto", "z"]
+        };
+        let all_static_libs: Vec<String> = static_libs
+            .iter()
+            .map(|name| name.to_string())
+            .chain(static_libs_external.iter().map(|name| name.to_string()))
+            .collect();
+
+        for link_name in &all_static_libs {
+            println!("cargo:rustc-link-lib=static={link_name}");
+        }
         // Link C++ standard library for static tdlib
         if target_os == "linux" || target_os == "macos" {
             println!("cargo:rustc-link-lib=c++");
@@ -187,25 +217,29 @@ fn generic_build() {
             panic!("Unsupported target OS: {target_os}");
         }
     }
+
     #[cfg(not(feature = "static"))]
-    println!("cargo:rustc-link-lib=dylib=tdjson");
-    #[cfg(not(feature = "static"))]
-    println!("cargo:rustc-link-arg=-Wl,-rpath,{lib_dir}");
+    {
+        println!("cargo:rustc-link-lib=dylib=tdjson");
+        println!("cargo:rustc-link-arg=-Wl,-rpath,{lib_dir}");
+    }
 }
 
 #[cfg(feature = "download-tdlib")]
 fn download_tdlib() {
     let base_url = "https://github.com/FedericoBruzzone/tdlib-rs/releases/download";
+    let target_os = env::var("CARGO_CFG_TARGET_OS").expect("CARGO_CFG_TARGET_OS not set");
+    let target_arch = env::var("CARGO_CFG_TARGET_ARCH").expect("CARGO_CFG_TARGET_ARCH not set");
     let url = format!(
         "{}/v{}/tdlib-{}-{}-{}.zip",
         base_url,
         env!("CARGO_PKG_VERSION"),
         TDLIB_VERSION,
-        std::env::var("CARGO_CFG_TARGET_OS").unwrap(),
-        std::env::var("CARGO_CFG_TARGET_ARCH").unwrap(),
+        target_os,
+        target_arch,
     );
 
-    let out_dir = env::var("OUT_DIR").unwrap();
+    let out_dir = env::var("OUT_DIR").expect("OUT_DIR environment variable not set");
     let tdlib_dir = format!("{}/tdlib", &out_dir);
     let zip_path = format!("{}.zip", &tdlib_dir);
 
@@ -226,26 +260,29 @@ fn download_tdlib() {
     };
 
     // Create a file to write to
-    let mut dest = File::create(&zip_path).unwrap();
+    let mut dest = File::create(&zip_path)
+        .unwrap_or_else(|err| panic!("Failed to create {}: {}", zip_path, err));
     let mut response_reader = response.body_mut().as_reader();
-    std::io::copy(&mut response_reader, &mut dest).unwrap();
+    std::io::copy(&mut response_reader, &mut dest)
+        .unwrap_or_else(|err| panic!("Failed to write to {}: {}", zip_path, err));
 
-    let mut archive = zip::ZipArchive::new(File::open(&zip_path).unwrap()).unwrap();
+    let mut archive = zip::ZipArchive::new(File::open(&zip_path).expect("Failed to open zip file"))
+        .expect("Failed to read zip archive");
 
     for i in 0..archive.len() {
-        let mut file = archive.by_index(i).unwrap();
+        let mut file = archive.by_index(i).expect("Failed to read zip entry");
         let outpath = Path::new(&out_dir).join(file.name());
 
-        if (*file.name()).ends_with('/') {
-            std::fs::create_dir_all(&outpath).unwrap();
+        if file.name().ends_with('/') {
+            std::fs::create_dir_all(&outpath).expect("Failed to create directory");
         } else {
-            if let Some(p) = outpath.parent()
-                && !p.exists()
-            {
-                std::fs::create_dir_all(p).unwrap();
+            if let Some(p) = outpath.parent() {
+                if !p.exists() {
+                    std::fs::create_dir_all(p).expect("Failed to create parent directory");
+                }
             }
-            let mut outfile = File::create(&outpath).unwrap();
-            std::io::copy(&mut file, &mut outfile).unwrap();
+            let mut outfile = File::create(&outpath).expect("Failed to create output file");
+            std::io::copy(&mut file, &mut outfile).expect("Failed to extract file");
         }
 
         // Get and set permissions
@@ -253,12 +290,13 @@ fn download_tdlib() {
         {
             use std::os::unix::fs::PermissionsExt;
             if let Some(mode) = file.unix_mode() {
-                std::fs::set_permissions(&outpath, std::fs::Permissions::from_mode(mode)).unwrap();
+                std::fs::set_permissions(&outpath, std::fs::Permissions::from_mode(mode))
+                    .expect("Failed to set permissions");
             }
         }
     }
 
-    let _ = std::fs::remove_file(&zip_path);
+    std::fs::remove_file(&zip_path).ok();
 }
 
 fn main() -> std::io::Result<()> {
@@ -305,13 +343,25 @@ fn main() -> std::io::Result<()> {
         generic_build();
     }
 
-    let out_dir = env::var("OUT_DIR").unwrap();
+    let out_dir = env::var("OUT_DIR").expect("OUT_DIR environment variable not set");
 
-    let definitions = load_tl("tl/api.tl")?;
+    // Ensure the TL file exists before trying to open it
+    let tl_file = "tl/api.tl";
+    if !Path::new(tl_file).exists() {
+        eprintln!("TL file not found: {}", tl_file);
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("TL file not found: {}", tl_file),
+        ));
+    }
 
-    let mut file = BufWriter::new(File::create(Path::new(&out_dir).join("generated.rs"))?);
+    let definitions = load_tl(tl_file)?;
 
-    generate_rust_code(&mut file, &definitions, cfg!(feature = "bots-only-api"))?;
+    let generated_path = Path::new(&out_dir).join("generated.rs");
+    let mut file = BufWriter::new(File::create(&generated_path)?);
+
+    generate_rust_code(&mut file, &definitions, cfg!(feature = "bots-only-api"))
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
 
     file.flush()?;
 
