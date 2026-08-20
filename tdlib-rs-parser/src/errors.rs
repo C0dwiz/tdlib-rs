@@ -12,6 +12,8 @@
 //!
 //! [Type Language]: https://core.telegram.org/mtproto/TL
 
+use std::fmt;
+
 /// The error type for the parsing operation of [`Definition`]s.
 ///
 /// [`Definition`]: tl/struct.Definition.html
@@ -36,6 +38,28 @@ pub enum ParseError {
     UnknownSeparator,
 }
 
+impl fmt::Display for ParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ParseError::Empty => write!(f, "empty definition"),
+            ParseError::InvalidParam(e) => write!(f, "invalid parameter: {}", e),
+            ParseError::MissingName => write!(f, "missing name in definition"),
+            ParseError::MissingType => write!(f, "missing type in definition"),
+            ParseError::NotImplemented => write!(f, "definition parsing not implemented"),
+            ParseError::UnknownSeparator => write!(f, "unknown separator in TL file"),
+        }
+    }
+}
+
+impl std::error::Error for ParseError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            ParseError::InvalidParam(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
 /// The error type for the parsing operation of [`Parameter`]s.
 ///
 /// [`Parameter`]: tl/struct.Parameter.html
@@ -50,3 +74,15 @@ pub enum ParamParseError {
     /// The parser does not know how to parse the parameter.
     NotImplemented,
 }
+
+impl fmt::Display for ParamParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ParamParseError::Empty => write!(f, "empty parameter"),
+            ParamParseError::InvalidGeneric => write!(f, "invalid generic argument"),
+            ParamParseError::NotImplemented => write!(f, "parameter parsing not implemented"),
+        }
+    }
+}
+
+impl std::error::Error for ParamParseError {}
