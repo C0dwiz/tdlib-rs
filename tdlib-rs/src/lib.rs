@@ -35,21 +35,29 @@ pub fn create_client() -> i32 {
 pub fn receive() -> Option<(Update, i32)> {
     let response = tdjson::receive(2.0);
     if let Some(response_str) = response {
-        let response: Value = serde_json::from_str(&response_str).unwrap();
-
-        match response.get("@extra") {
-            Some(_) => {
-                OBSERVER.notify(response);
+        let response: Value = match serde_json::from_str(&response_str) {
+            Ok(v) => v,
+            Err(e) => {
+                log::error!("Failed to parse JSON response: {}\nResponse: {}", e, response_str);
+                return None;
             }
-            None => {
-                let client_id = response["@client_id"].as_i64().unwrap() as i32;
-                match serde_json::from_value(response) {
-                    Ok(update) => {
-                        return Some((update, client_id));
-                    }
-                    Err(e) => {
-                        log::warn!("Received an unknown response: {response_str}\nReason: {e}");
-                    }
+        };
+
+        if response.get("@extra").is_some() {
+            OBSERVER.notify(response);
+        } else {
+            let client_id = match response.get("@client_id").and_then(|v| v.as_i64()) {
+                Some(id) => id as i32,
+                None => {
+                    log::error!("Response missing '@client_id' field: {}", response_str);
+                    return None;
+                }
+            };
+
+            match serde_json::from_value(response) {
+                Ok(update) => return Some((update, client_id)),
+                Err(e) => {
+                    log::warn!("Received an unknown response: {}\nReason: {}", response_str, e);
                 }
             }
         }
